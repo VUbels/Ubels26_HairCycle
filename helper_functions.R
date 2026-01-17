@@ -1,3 +1,112 @@
+###################################################
+# CUSTOM PLOTTING FUNCTION - P-VALUES INSTEAD OF FDR
+###################################################
+
+plotNhoodGraphDA_pval <- function(x, milo_res, alpha = 0.1, res_column = "logFC", 
+                                  use_pvalue = TRUE, layout = "UMAP", ...) {
+  
+  # Check if neighborhood graph exists
+  if(is.null(nhoodGraph(x)) || length(igraph::E(nhoodGraph(x))) == 0){
+    stop("Not a valid Milo object - neighbourhood graph is missing. Please run buildNhoodGraph() first.")
+  }
+  
+  # Check if layout is valid
+  if (is.character(layout)) {
+    if (!layout %in% names(reducedDims(x))) {
+      stop(layout, " is not in reducedDim(x) - choose a different layout")
+    }
+  }
+  
+  ## Add milo results to colData
+  signif_res <- milo_res
+  
+  # Use PValue instead of SpatialFDR if specified
+  if(use_pvalue) {
+    signif_res$test_stat <- signif_res$PValue
+  } else {
+    signif_res$test_stat <- signif_res$SpatialFDR
+  }
+  
+  # Handle NAs
+  signif_res$test_stat[is.na(signif_res$test_stat)] <- 1
+  
+  # Set logFC to 0 for non-significant neighborhoods
+  signif_res[signif_res$test_stat > alpha, res_column] <- 0
+  
+  # Add results to colData
+  colData(x)[res_column] <- NA
+  
+  # Handle nhood subsetting
+  if(any(names(list(...)) %in% c("subset.nhoods"))){
+    subset.nhoods <- list(...)$subset.nhoods
+    sub.indices <- nhoodIndex(x)[subset.nhoods]
+    colData(x)[unlist(sub.indices[signif_res$Nhood]), res_column] <- signif_res[,res_column]
+  } else{
+    colData(x)[unlist(nhoodIndex(x)[signif_res$Nhood]), res_column] <- signif_res[,res_column]
+  }
+  
+  # Check for res_column in graph vertex attributes
+  g_atts <- names(igraph::vertex_attr(nhoodGraph(x)))
+  if(isFALSE(res_column %in% g_atts)){
+    message("Adding nhood effect sizes to neighbourhood graph attributes")
+    
+    if(any(names(list(...)) %in% c("subset.nhoods"))){
+      nh.v <- igraph::V(nhoodGraph(x))
+      drop.v <- setdiff(nh.v, sub.indices)
+      nhgraph <- nhoodGraph(x)
+      nhgraph <- igraph::subgraph(nhgraph, sub.indices)
+      nhgraph <- igraph::set_vertex_attr(nhgraph,
+                                         name = res_column, value = signif_res[, res_column])
+      nhoodGraph(x) <- nhgraph
+    } else{
+      nhoodGraph(x) <- igraph::set_vertex_attr(nhoodGraph(x), 
+                                               name = res_column, 
+                                               value = signif_res[, res_column])
+    }
+  }
+  
+  ## Plot logFC - pass layout explicitly
+  plotNhoodGraph(x, colour_by = res_column, layout = layout, is.da = TRUE, ...) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14))
+}
+
+###################################################
+# CELL EXTRACTION FUNCTION
+###################################################
+
+extract_DA_cells <- function(milo_obj, da_results, alpha = 0.05, 
+                             direction = "both", use_pvalue = TRUE) {
+  # direction: "up" (logFC > 0), "down" (logFC < 0), or "both"
+  
+  if(use_pvalue) {
+    sig_col <- "PValue"
+  } else {
+    sig_col <- "SpatialFDR"
+  }
+  
+  # Filter significant neighborhoods
+  if(direction == "up") {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha & da_results$logFC > 0]
+  } else if(direction == "down") {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha & da_results$logFC < 0]
+  } else {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha]
+  }
+  
+  # Extract cells from significant neighborhoods
+  cell_barcodes <- c()
+  for(i in sig_nhoods) {
+    nhood_cells <- colnames(milo_obj)[nhoods(milo_obj)[, i] == 1]
+    cell_barcodes <- c(cell_barcodes, nhood_cells)
+  }
+  
+  return(unique(cell_barcodes))
+}
+
 # ============================================================================
 # ENHANCED SPATIAL OVERLAP WITH EXPRESSION THRESHOLDS
 # ============================================================================
@@ -14,31 +123,7 @@ plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
                                              output_path = NULL,
                                              pt.size.factor = 1.5,
                                              show_diagnostics = TRUE) {
-  """
-  Visualize spatial overlap with expression thresholds to remove background.
   
-  NEW Parameters:
-  ---------------
-  min_expr_percentile : numeric (0-100)
-      Percentile threshold for individual gene expression.
-      e.g., 20 means only spots in top 80% of expression are considered positive.
-      Higher = stricter (less background, fewer false positives)
-      Recommended: 10-30
-      
-  min_expr_absolute : numeric or NULL
-      Absolute expression threshold (applied AFTER smoothing).
-      e.g., 0.5 means smoothed expression must be > 0.5
-      NULL = use percentile only
-      
-  min_overlap_percentile : numeric (0-100)  
-      Percentile threshold for final overlap scores.
-      Only display overlap values above this percentile.
-      Recommended: 5-20
-      
-  require_both_genes : logical
-      If TRUE, both genes must exceed threshold for overlap to be counted.
-      If FALSE, overlap is calculated then thresholded separately.
-  """
   
   # Get expression data
   assay_data <- GetAssayData(spatial_obj, assay = assay, layer = "data")
@@ -113,11 +198,11 @@ plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
   } else {
     # Calculate overlap, then threshold
     overlap_raw <- switch(overlap_method,
-      "geometric_mean" = sqrt(gene1_thresh * gene2_thresh),
-      "minimum" = pmin(gene1_thresh, gene2_thresh),
-      "product" = gene1_thresh * gene2_thresh,
-      "average" = (gene1_thresh + gene2_thresh) / 2,
-      stop("Invalid overlap_method")
+                          "geometric_mean" = sqrt(gene1_thresh * gene2_thresh),
+                          "minimum" = pmin(gene1_thresh, gene2_thresh),
+                          "product" = gene1_thresh * gene2_thresh,
+                          "average" = (gene1_thresh + gene2_thresh) / 2,
+                          stop("Invalid overlap_method")
     )
   }
   
@@ -125,8 +210,8 @@ plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
   nonzero_overlap <- overlap_raw[overlap_raw > 0]
   if(length(nonzero_overlap) > 0) {
     overlap_threshold <- quantile(nonzero_overlap, 
-                                   probs = min_overlap_percentile/100, 
-                                   na.rm = TRUE)
+                                  probs = min_overlap_percentile/100, 
+                                  na.rm = TRUE)
     overlap_raw[overlap_raw < overlap_threshold] <- 0
   } else {
     overlap_threshold <- 0
@@ -181,14 +266,14 @@ plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
       colors = c("grey95", "grey90", "#FFCCCC", "#FF9999", 
                  "#FF5555", "red", "#CC0000", "darkred"),
       values = scales::rescale(c(0, 0.001, q01, q01*1.5, q50*0.8, 
-                                  q50*1.2, q99*0.9, q99)),
+                                 q50*1.2, q99*0.9, q99)),
       limits = c(0, q99),
       na.value = "white",
       name = "Overlap\nScore"
     ) +
     ggtitle(paste0(gene1, " & ", gene2, " spatial overlap"),
             subtitle = sprintf("σ=%dμm | Gene thresh=%d%% | Overlap thresh=%d%%", 
-                              sigma, min_expr_percentile, min_overlap_percentile)) +
+                               sigma, min_expr_percentile, min_overlap_percentile)) +
     theme_minimal() +
     theme(
       legend.position = "right",
@@ -230,15 +315,7 @@ plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
 compare_thresholding <- function(spatial_obj, gene1, gene2,
                                  sigma = 50,
                                  threshold_levels = c(0, 10, 20, 30)) {
-  """
-  Compare overlap with different threshold stringency levels.
-  
-  Parameters:
-  -----------
-  threshold_levels : numeric vector
-      Percentile thresholds to test (0 = no threshold, 30 = very strict)
-  """
-  
+
   library(patchwork)
   
   plots <- list()
@@ -278,17 +355,7 @@ plot_spatial_overlap_adaptive <- function(spatial_obj, gene1, gene2,
                                           sensitivity = "medium",  # "low", "medium", "high"
                                           output_path = NULL,
                                           pt.size.factor = 1.5) {
-  """
-  Automatically determine thresholds based on expression distribution.
-  
-  Parameters:
-  -----------
-  sensitivity : character
-      - "low": Strict thresholds (30th percentile, fewer false positives)
-      - "medium": Moderate thresholds (20th percentile) [DEFAULT]
-      - "high": Lenient thresholds (10th percentile, more sensitive)
-  """
-  
+
   # Map sensitivity to threshold values
   threshold_map <- list(
     "low" = list(expr = 30, overlap = 15),
@@ -301,18 +368,18 @@ plot_spatial_overlap_adaptive <- function(spatial_obj, gene1, gene2,
   }
   
   thresholds <- threshold_map[[sensitivity]]
- 
+  
   message(sprintf("Using %s sensitivity (expr: %d%%, overlap: %d%%)", 
                   sensitivity, thresholds$expr, thresholds$overlap))
   
   result <- plot_spatial_overlap_thresholded(
     spatial_obj = spatial_obj,
-    gene1 = gene1
+    gene1 = gene1,
     gene2 = gene2,
     sigma = sigma,
     assay = assay,
     overlap_method = overlap_method,
-    min_expr_percentile = thresholds$exp
+    min_expr_percentile = thresholds$expr,
     min_overlap_percentile = thresholds$overlap,
     require_both_genes = TRUE,
     output_path = output_path,
@@ -322,10 +389,3 @@ plot_spatial_overlap_adaptive <- function(spatial_obj, gene1, gene2,
   
   return(result)
 }
-
-# ============================================================================
-# USAGE EXAMPLES
-# ============================================================================
-
-# Example 1: Test with strict thresholds to remove background
-result_strict <- plot_spatial_overlap_thresholde
