@@ -15,8 +15,18 @@ library(ggplot2)
 library(patchwork)
 library(reticulate)
 
+###########################
+# 2. SETUP PROJECT PARAMETERS
+############################
+
+project <- "ubels26_haircycle"
+input_folder <- "/mnt/d/scrna_datasets/ubels26_scrna_dataset"
+preprocess_output_folder <- paste0("./preprocessing/")
+scrna_data <- list.files(input_folder, recursive = FALSE, include.dirs = FALSE, pattern = ".h5")
+variables <- c("anagen", "catagen", "telogen")
+
 #########################
-# 2. SETUP PY ENVIRONMENT
+# 3. SETUP PY ENVIRONMENT
 #########################
 
 # Please note that for GPU support you need to manually change
@@ -28,31 +38,51 @@ library(reticulate)
 source("./helper_functions.R")
 source("./setup_py_env.R")
 
-py_env_name <- "ubels26_haircycle"
 py_location <- "/home/uvictor/miniconda3/bin/conda"
-
-# If first time installing restart R after conda_env installation otherwise GPU doesn't initiate
-setup_py_env(py_env_name, py_location)
+conda_info_env <- setup_py_env(project, py_location)
 cellbender <- reticulate::import("cellbender")
 
-###########################
-# 3. SETUP OTHER PARAMETERS
-############################
+#########################################
+# 2. RUN CELLBENDER - AMBIENT RNA REMOVAL
+#########################################
 
-project <- "ubels26_haircycle"
-input_folder <- "/mnt/d/scrna_datasets/ubels26_scrna_dataset"
-preprocess_output_folder <- paste0("./preprocessing/")
+for (dataset in scrna_data) {
+  
+  # Construct paths
+  cellbender_input_path <- file.path(input_folder, dataset)
+  dataset_base <- sub("\\.h5$", "", dataset)
+  
+  # Create output directory
+  cellbender_output_dir <- file.path(preprocess_output_folder, paste0(dataset_base, "_cellbender_results"))
+  dir.create(cellbender_output_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  # Output file inside that directory
+  output_name <- paste0(dataset_base, "_postcellbender.h5")
+  cellbender_output_path <- file.path(cellbender_output_dir, output_name)
+  
+  # Build CellBender command
+  cmd <- sprintf(
+    "%s remove-background --input %s --output %s --cuda",
+    conda_info_env$cellbender_bin,
+    shQuote(cellbender_input_path),
+    shQuote(cellbender_output_path)
+  )
 
-objects <- list.files(input_folder, recursive = FALSE, include.dirs = FALSE, pattern = ".h5")
-variables <- c("anagen", "catagen", "telogen")
+  # Run CellBender
+  message("Processing: ", dataset)
+  exit_code <- system(cmd)
+  
+  if (exit_code != 0) {
+    warning("CellBender failed for: ", dataset)
+  } else {
+    message("Completed: ", output_name)
+  }
+}
 
-####################################
-
-# 2. RUN CELLBENDER
-
-dir.create(preprocess_output_folder)
-
+################################
 # 3. DATA LOADING AND INITIAL QC
+################################
+
 object.list <- list()
 
 for (i in seq_along(objects)) {
