@@ -4,6 +4,8 @@
 
 remove_ambient_rna <- function(input_folder, output_folder = "./", epochs = 150, cellbender_learning_rate = 0.0001) {
   
+  cellbender <- reticulate::import("cellbender")
+  
   datasets <- list.files(input_folder, pattern = "\\.h5$", recursive = FALSE)
   
   for (dataset in datasets) {
@@ -37,6 +39,56 @@ remove_ambient_rna <- function(input_folder, output_folder = "./", epochs = 150,
       warning("CellBender failed for: ", dataset)
     } else {
       message("Completed: ", output_name)
+    }
+  }
+}
+
+###############################################################
+# COMPRESS CELLBENDER OUTPUT FOR SEURAT
+###############################################################
+make_seurat_compatible <- function(output_folder) {
+  
+  # Find all CellBender filtered output files
+  cellbender_output_dirs <- list.dirs(
+    file.path(output_folder, "preprocessing"),
+    recursive = FALSE
+  )
+  
+  for (cb_dir in cellbender_output_dirs) {
+    
+    # Look for the _filtered.h5 file
+    filtered_files <- list.files(
+      cb_dir,
+      pattern = "_filtered\\.h5$",
+      full.names = TRUE
+    )
+    
+    if (length(filtered_files) == 0) {
+      warning("No filtered.h5 file found in: ", cb_dir)
+      next
+    }
+    
+    for (input_file in filtered_files) {
+      
+      # Create output filename
+      output_file <- sub("_filtered\\.h5$", "_filtered_seurat.h5", input_file)
+      
+      # Build ptrepack command
+      cmd <- sprintf(
+        "ptrepack --complevel 5 %s:/matrix %s:/matrix",
+        shQuote(input_file),
+        shQuote(output_file)
+      )
+      
+      # Run compression
+      message("Compressing: ", basename(input_file))
+      exit_code <- system(cmd)
+      
+      if (exit_code != 0) {
+        warning("ptrepack failed for: ", basename(input_file))
+      } else {
+        message("Created: ", basename(output_file))
+      }
     }
   }
 }

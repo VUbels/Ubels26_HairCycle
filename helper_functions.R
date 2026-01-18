@@ -1,4 +1,226 @@
 ###################################################
+# SIMPLE FUNCTION TO PLOT QC METRICS FOR ALL DATA
+###################################################
+
+show_qc_metrics <- function(input_folder) {
+  
+  post_aRNA_removal_dirs <- list.dirs(
+    file.path(input_folder, "preprocessing"),
+    recursive = FALSE
+  )
+  
+  h5_files <- list.files(
+                        post_aRNA_removal_dirs,
+                        pattern = "_filtered_seurat.h5",
+                        full.names = TRUE,
+                        recursive = TRUE
+                        )
+  
+  object.list <- list()
+  
+  for (i in seq_along(h5_files)) {
+    
+    object <- h5_files[[i]]  
+    stage <- dataset_names[[i]]
+    
+    # Load CellBender-corrected data
+    data.arna_corrected <- Read10X_h5(object, use.names = TRUE)  
+    obj <- CreateSeuratObject(counts = data.arna_corrected, project = stage)
+    obj$orig.ident <- stage
+    
+    # Calculate QC metrics
+    obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-")
+    
+    # QC visualization
+    gg1 <- print(VlnPlot(obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3))
+    output_folder = paste0(input_folder, "/preprocessing/qc_metrics/")
+    dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
+    
+    file_name = paste0(output_folder, "qc_VlnPlot_", stage, "_.png")
+    ggsave(file_name)
+    
+    plot1 <- FeatureScatter(obj, feature1 = "nCount_RNA", feature2 = "percent.mt")
+    plot2 <- FeatureScatter(obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+    print(plot1 + plot2)
+    
+    file_name = paste0(output_folder, "qc_Scatterplot_", stage, "_.png")
+    ggsave(file_name, width = 12)
+    
+    object.list[[i]] <- obj
+    
+    rm(data.arna_corrected)
+    rm(obj)
+  }
+  
+  return(object.list)
+  
+}
+
+###################################################
+# FILTER DATA AFTER QC METRIC VISUALIZATION
+###################################################
+
+filter_by_qc <- function(input_folder, project_names, min_feature = NULL, max_feature = NULL, min_count = NULL, max_count = NULL, max_percent_mt = NULL) {
+  
+  post_aRNA_removal_dirs <- list.dirs(
+    file.path(input_folder, "preprocessing"),
+    recursive = FALSE
+  )
+  
+  h5_files <- list.files(
+    post_aRNA_removal_dirs,
+    pattern = "_filtered_seurat\\.h5$",
+    full.names = TRUE,
+    recursive = TRUE
+  )
+  
+  # DEBUG: Show file order
+  cat("Files found (in order):\n")
+  print(basename(h5_files))
+  cat("\nProject names (in order):\n")
+  print(project_names)
+  cat("\n")
+  
+  object.list <- list()
+  
+  for (i in seq_along(h5_files)) {
+    
+    cat("Processing file:", basename(h5_files[i]), "with name:", project_names[i], "\n")
+    
+    counts <- Seurat::Read10X_h5(h5_files[i])
+    
+    obj <- Seurat::CreateSeuratObject(
+      counts = counts,
+      project = as.character(project_names[i])  # Force character
+    )
+    
+    obj$orig.ident <- project_names[i]
+    cat("Set orig.ident to:", unique(obj$orig.ident), "\n")
+    
+    obj[["percent.mt"]] <- Seurat::PercentageFeatureSet(obj, pattern = "^mt-|^MT-")
+    
+    obj <- subset(
+      obj, 
+      subset = nFeature_RNA > min_feature & 
+        nFeature_RNA < max_feature & 
+        nCount_RNA > min_count &  
+        nCount_RNA < max_count & 
+        percent.mt < max_percent_mt
+    )
+    
+    object.list[[i]] <- obj
+    
+    cat("Remaining cells after QC for", unique(obj$orig.ident), "is", ncol(obj), "cells\n\n")
+  }
+  
+  return(object.list)
+}
+
+###############################################################
+# INTEGRATE SCRNA DATA USING SCANORAMA (PYTHON SCRIPT)
+###############################################################
+
+###############################################################
+# INTEGRATE SCRNA DATA USING SCANORAMA (PYTHON SCRIPT)
+###############################################################
+
+scrna_integrate <- function(object.list, output_folder = "./", dataset_names, python_script_path = "./integrate_scanorama.py") {
+  
+  cat("\n##################################\n")
+  cat("Normalizing and saving filtered objects...\n")
+  cat("##################################\n")
+  
+  temp_dir <- file.path(output_folder, "preprocessing", "filtered_for_integration")
+  dir.create(temp_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  for (i in seq_along(object.list)) {
+    obj <- object.list[[i]]
+    cat("Processing", dataset_names[i], "...\n")
+    
+    obj <- NormalizeData(obj, verbose = FALSE)
+    obj <- JoinLayers(obj)
+    data_matrix <- LayerData(obj, assay = "RNA", layer = "data")
+    
+    h5_path <- file.path(temp_dir, paste0(dataset_names[i], "_qc_filtered.h5"))
+    DropletUtils::write10xCounts(path = h5_path, x = data_matrix, version = "3")
+    
+    cat("  Saved:", ncol(obj), "cells x", nrow(obj), "genes\n")
+  }
+  
+  cat("\n##################################\n")
+  cat("Running Scanorama via Python...\n")
+  cat("##################################\n")
+  
+  # Call the existing Python script
+  cmd <- sprintf(
+    "python %s %s %s %s",
+    shQuote(python_script_path),
+    shQuote(temp_dir),
+    shQuote(file.path(output_folder, "preprocessing")),
+    paste(shQuote(dataset_names), collapse = " ")
+  )
+  
+  cat("Running:\n", cmd, "\n\n")
+  exit_code <- system(cmd)
+  
+  if (exit_code != 0) {
+    stop("Python script failed with exit code ", exit_code)
+  }
+  
+  # Read integrated h5ad using scanpy via reticulate
+  cat("\n##################################\n")
+  cat("Loading integrated data into R...\n")
+  cat("##################################\n")
+  
+  sc <- reticulate::import("scanpy")
+  h5ad_path <- file.path(output_folder, "preprocessing", "integrated_scanorama.h5ad")
+  adata <- sc$read_h5ad(h5ad_path)
+  
+  # Convert to Seurat
+  counts <- reticulate::py_to_r(adata$X)
+  if (inherits(counts, "scipy.sparse.base.spmatrix")) {
+    counts <- as(counts, "CsparseMatrix")
+  }
+  counts <- Matrix::t(counts)
+  
+  # Get metadata
+  metadata <- reticulate::py_to_r(adata$obs)
+  
+  # Get embeddings
+  umap_coords <- reticulate::py_to_r(adata$obsm$get("X_umap"))
+  scanorama_coords <- reticulate::py_to_r(adata$obsm$get("X_scanorama"))
+  
+  # Create Seurat object
+  integrated_seurat <- CreateSeuratObject(
+    counts = counts,
+    meta.data = metadata
+  )
+  
+  # Add embeddings
+  colnames(umap_coords) <- paste0("UMAP_", 1:2)
+  rownames(umap_coords) <- colnames(integrated_seurat)
+  integrated_seurat[["umap"]] <- CreateDimReducObject(
+    embeddings = umap_coords,
+    key = "UMAP_",
+    assay = "RNA"
+  )
+  
+  colnames(scanorama_coords) <- paste0("scanorama_", 1:ncol(scanorama_coords))
+  rownames(scanorama_coords) <- colnames(integrated_seurat)
+  integrated_seurat[["scanorama"]] <- CreateDimReducObject(
+    embeddings = scanorama_coords,
+    key = "scanorama_",
+    assay = "RNA"
+  )
+  
+  cat("\n##################################\n")
+  cat("Integration complete!\n")
+  cat("##################################\n\n")
+  
+  return(integrated_seurat)
+}
+
+###################################################
 # CUSTOM PLOTTING FUNCTION - P-VALUES INSTEAD OF FDR
 ###################################################
 

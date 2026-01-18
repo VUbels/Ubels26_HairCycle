@@ -22,7 +22,7 @@ setup_py_env <- function(py_env_name, py_location) {
     reticulate::conda_create(
       envname = py_env_name,
       python_version = "3.12",
-      packages = c("pip", "umap-learn")
+      packages = c("pip", "umap-learn", "tables", "scanorama")
     )
     
     # Activate

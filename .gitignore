@@ -4,6 +4,9 @@
 .Ruserdata
 .pub
 
-*.csv
-*.h5
+*.RDS
 *.rds
+*.h5ad
+*.h5
+*.h5seurat
+*.csv
