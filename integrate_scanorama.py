@@ -8,9 +8,9 @@ input_dir = sys.argv[1]
 output_dir = sys.argv[2]
 dataset_names = sys.argv[3:]
 
-print('='*50)
+print('#'*50)
 print('Loading QC-filtered datasets...')
-print('='*50)
+print('#'*50)
 
 adatas = []
 h5_files = sorted(Path(input_dir).glob('*_qc_filtered.h5'))
@@ -31,13 +31,13 @@ for i, h5_file in enumerate(h5_files):
     adatas.append(adata)
     print(f'  {dataset_names[i]}: {adata.n_obs} cells x {adata.n_vars} genes')
 
-print('\n' + '='*50)
+print('\n' + '#'*50)
 print('Running Scanorama integration...')
-print('='*50)
+print('#'*50)
 
 scanorama.integrate_scanpy(adatas, dimred=50)
 
-print('\nMerging datasets...')
+print('\nMerging datasets')
 integrated = sc.concat(adatas, label='batch', keys=dataset_names)
 print(f'Integrated: {integrated.n_obs} cells x {integrated.n_vars} genes')
 
@@ -50,4 +50,4 @@ Path(output_dir).mkdir(parents=True, exist_ok=True)
 h5ad_file = Path(output_dir) / 'integrated_scanorama.h5ad'
 integrated.write_h5ad(h5ad_file)
 print(f'\nSaved: {h5ad_file}')
-print('\nIntegration complete!')
+print('\nIntegration complete')
