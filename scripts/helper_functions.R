@@ -143,8 +143,17 @@ scrna_integrate <- function(object.list, output_folder = "./", dataset_names,
     obj <- JoinLayers(obj)
     data_matrix <- LayerData(obj, assay = "RNA", layer = "data")
     
+    gene_names <- rownames(data_matrix)
+    
     h5_path <- file.path(temp_dir, paste0(dataset_names[i], "_qc_filtered.h5"))
-    DropletUtils::write10xCounts(path = h5_path, x = data_matrix, version = "3", overwrite = TRUE)
+    DropletUtils::write10xCounts(
+      path = h5_path, 
+      x = data_matrix, 
+      gene.id = gene_names,
+      gene.symbol = gene_names,
+      version = "3", 
+      overwrite = TRUE
+    )
     
     cat("  Saved:", ncol(obj), "cells x", nrow(obj), "genes\n")
   }
@@ -153,14 +162,12 @@ scrna_integrate <- function(object.list, output_folder = "./", dataset_names,
   cat("Running Scanorama via Python...\n")
   cat("##################################\n")
   
-  # Use provided python_path or fall back to system default
   if (is.null(python_path)) {
     python_cmd <- "python"
   } else {
     python_cmd <- python_path
   }
   
-  # Call the script with explicit Python interpreter
   cmd <- sprintf(
     "%s %s %s %s %s",
     shQuote(python_cmd),
@@ -184,20 +191,29 @@ scrna_integrate <- function(object.list, output_folder = "./", dataset_names,
   h5ad_path <- file.path(output_folder, "preprocessing", "integrated_scanorama.h5ad")
   adata <- sc$read_h5ad(h5ad_path)
   
-  # Convert to Seurat
+  # Convert expression matrix (stays sparse)
   counts <- reticulate::py_to_r(adata$X)
-  if (inherits(counts, "scipy.sparse.base.spmatrix")) {
+  if (inherits(counts, "scipy.sparse.base.spmatrix") || 
+      grepl("sparse", class(counts)[1], ignore.case = TRUE)) {
     counts <- as(counts, "CsparseMatrix")
   }
   counts <- Matrix::t(counts)
   
-  #Set row and column names explicitly
-  rownames(counts) <- rownames(adata)  
-  colnames(counts) <- adata$obs_names$to_list() 
+  gene_names <- adata$var_names$to_list()
+  cell_names <- adata$obs_names$to_list()
   
-  # Get metadata
+  rownames(counts) <- gene_names
+  colnames(counts) <- cell_names
+  
+  cat("First 5 genes:", paste(head(gene_names, 5), collapse = ", "), "\n")
+  
+  # Get metadata with leiden clusters
   metadata <- reticulate::py_to_r(adata$obs)
-  rownames(metadata) <- adata$obs_names$to_list() 
+  rownames(metadata) <- cell_names
+  
+  if ("leiden" %in% colnames(metadata)) {
+    metadata$seurat_clusters <- factor(metadata$leiden)
+  }
   
   # Create Seurat object
   integrated_seurat <- CreateSeuratObject(
@@ -205,11 +221,8 @@ scrna_integrate <- function(object.list, output_folder = "./", dataset_names,
     meta.data = metadata
   )
   
-  # Get embeddings from adata
+  # Transfer UMAP
   umap_coords <- reticulate::py_to_r(adata$obsm$get("X_umap"))
-  scanorama_coords <- reticulate::py_to_r(adata$obsm$get("X_scanorama"))
-  
-  # Add embeddings
   colnames(umap_coords) <- paste0("UMAP_", 1:2)
   rownames(umap_coords) <- colnames(integrated_seurat)
   integrated_seurat[["umap"]] <- CreateDimReducObject(
@@ -218,19 +231,135 @@ scrna_integrate <- function(object.list, output_folder = "./", dataset_names,
     assay = "RNA"
   )
   
-  colnames(scanorama_coords) <- paste0("scanorama_", 1:ncol(scanorama_coords))
+  # Transfer scanorama embedding (use as "pca" equivalent for downstream)
+  scanorama_coords <- reticulate::py_to_r(adata$obsm$get("X_scanorama"))
+  colnames(scanorama_coords) <- paste0("PC_", 1:ncol(scanorama_coords))
   rownames(scanorama_coords) <- colnames(integrated_seurat)
-  integrated_seurat[["scanorama"]] <- CreateDimReducObject(
+  integrated_seurat[["pca"]] <- CreateDimReducObject(
     embeddings = scanorama_coords,
-    key = "scanorama_",
+    key = "PC_",
     assay = "RNA"
   )
   
+  # Transfer neighbor graph
+  connectivities <- reticulate::py_to_r(adata$obsp$get("connectivities"))
+  if (!is.null(connectivities)) {
+    connectivities <- as(connectivities, "CsparseMatrix")
+    rownames(connectivities) <- colnames(integrated_seurat)
+    colnames(connectivities) <- colnames(integrated_seurat)
+    integrated_seurat@graphs$RNA_snn <- as.Graph(connectivities)
+  }
+  
+  Idents(integrated_seurat) <- "seurat_clusters"
+  
+  # Normalize for downstream (FeaturePlot etc.)
+  integrated_seurat <- NormalizeData(integrated_seurat, verbose = FALSE)
+  
   cat("\n##################################\n")
   cat("Integration complete!\n")
+  cat(sprintf("Cells: %d | Genes: %d | Clusters: %d\n", 
+              ncol(integrated_seurat), 
+              nrow(integrated_seurat),
+              length(unique(integrated_seurat$seurat_clusters))))
   cat("##################################\n\n")
   
   return(integrated_seurat)
+}
+###################################################
+# RUN MAGIC ON GENES FOR VISUALIZATION - FIX FOR S5
+###################################################
+
+plot_magic_genes <- function(seurat_obj, 
+                             genes,
+                             output_folder = "./marker_genes",
+                             knn = 10,
+                             t = 3,
+                             reduction = "umap",
+                             pt.size = 0.5,
+                             n_pca = 50) {
+  
+  library(reticulate)
+  library(dplyr)
+  library(ggplot2)
+  library(Matrix)
+  
+  magic <- import("magic")
+  
+  dir.create(output_folder, showWarnings = FALSE)
+  
+  # Join layers for Seurat v5
+  seurat_obj <- JoinLayers(seurat_obj)
+  
+  # Get normalized expression (cells x genes)
+  expr <- t(as(LayerData(seurat_obj, layer = "data"), "sparseMatrix"))
+  expr <- expr[, Matrix::colSums(expr) > 0]
+  
+  cat(sprintf("Matrix: %d cells x %d genes\n", nrow(expr), ncol(expr)))
+  
+  # Use Seurat's pre-computed PCA instead of letting MAGIC recompute
+  pca_embed <- Embeddings(seurat_obj, reduction = "pca")[, 1:n_pca]
+  
+  cat(sprintf("Using pre-computed PCA (%d components)\n", ncol(pca_embed)))
+  cat(sprintf("Running MAGIC on %d genes...\n", length(genes)))
+  
+  # Initialize MAGIC with n_pca=0 to skip internal PCA computation
+  # Pass knn_dist="precomputed_affinity" won't work, but we can use solver='approximate'
+  magic_op <- magic$MAGIC(
+    knn = as.integer(knn), 
+    t = as.integer(t),
+    n_pca = as.integer(n_pca),  # Still uses PCA but on smaller input
+    solver = "approximate",
+    n_jobs = 1L
+  )
+  
+  # Fit on PCA space, transform expression for selected genes only
+  magic_op$fit(X = pca_embed)
+  
+  # Get the graph and apply to expression data for selected genes
+  expr_dense <- as.matrix(expr[, genes, drop = FALSE])
+  expr_smooth <- magic_op$transform(X = expr_dense, genes = "all_genes")
+  expr_smooth <- as.matrix(expr_smooth)
+  colnames(expr_smooth) <- genes
+  
+  # Get UMAP coordinates
+  umap_coords <- Embeddings(seurat_obj, reduction = reduction)
+  
+  for (gene in genes) {
+    
+    # Plot
+    pdf(
+      file.path(output_folder, paste0(gene, "_marker.pdf")),
+      width = 8,
+      height = 6
+    )
+    
+    if (!gene %in% colnames(expr_smooth)) {
+      message(sprintf("Warning: %s not found, skipping", gene))
+      next
+    }
+    
+    plot_df <- data.frame(
+      UMAP_1 = umap_coords[, 1],
+      UMAP_2 = umap_coords[, 2],
+      Expression = expr_smooth[, gene]
+    )
+    
+    upper_lim <- quantile(plot_df$Expression, probs = 0.95)
+    plot_df$Expression[plot_df$Expression >= upper_lim] <- upper_lim
+    
+    p <- ggplot(plot_df, aes(x = UMAP_1, y = UMAP_2, color = Expression)) +
+      geom_point(size = pt.size) +
+      scale_color_viridis_c() +
+      ggtitle(paste0(gene, " (MAGIC smoothed)")) +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 14, face = "bold"))
+    
+    print(p)
+    
+    dev.off()
+  }
+
+  cat(sprintf("Plots saved to: %s\n", output_folder))
 }
 
 ###################################################

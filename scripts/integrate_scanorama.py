@@ -23,6 +23,8 @@ for i, h5_file in enumerate(h5_files):
     adata = sc.read_10x_h5(str(h5_file))
     adata.obs['dataset'] = dataset_names[i]
     adata.obs['orig.ident'] = dataset_names[i]
+    adata.var_names_make_unique()
+    print(f'  First 5 genes: {adata.var_names[:5].tolist()}')
     adatas.append(adata)
     print(f'  {dataset_names[i]}: {adata.n_obs} cells x {adata.n_vars} genes')
 
@@ -30,19 +32,31 @@ print('\n' + '='*50)
 print('Running Scanorama integration...')
 print('='*50)
 
+# Scanorama integration - this computes X_scanorama (50-dim embedding)
 scanorama.integrate_scanpy(adatas, dimred=50)
 
 print('\nMerging datasets...')
-integrated = sc.concat(adatas, label='batch', keys=dataset_names)
+integrated = sc.concat(adatas, label='batch', keys=dataset_names, join='inner')
 print(f'Integrated: {integrated.n_obs} cells x {integrated.n_vars} genes')
+print(f'First 5 genes: {integrated.var_names[:5].tolist()}')
 
-print('\nRunning UMAP...')
+# NO sc.pp.scale() - that's what causes the memory explosion
+# NO sc.tl.pca() on full matrix - unnecessary since we use X_scanorama
+
+# Use X_scanorama directly for neighbors (this is the whole point of scanorama)
+print('Computing neighbors from scanorama embedding...')
 sc.pp.neighbors(integrated, use_rep='X_scanorama', n_neighbors=30)
+
+print('Running UMAP...')
 sc.tl.umap(integrated)
+
+print('Running Leiden clustering...')
 sc.tl.leiden(integrated, resolution=0.5, flavor='igraph', n_iterations=2, directed=False)
 
+# Save - X stays sparse, only embeddings are dense (which is fine)
 Path(output_dir).mkdir(parents=True, exist_ok=True)
 h5ad_file = Path(output_dir) / 'integrated_scanorama.h5ad'
 integrated.write_h5ad(h5ad_file)
+
 print(f'\nSaved: {h5ad_file}')
-print('\nIntegration complete!')
+print('Integration complete!')

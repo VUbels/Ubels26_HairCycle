@@ -15,6 +15,8 @@
 library(Seurat)
 library(SeuratDisk)
 library(CDI)
+library(Rmagic)
+library(reticulate)
 
 #################################################################
 # SETUP PROJECT PARAMETERS
@@ -22,8 +24,11 @@ library(CDI)
 
 project <- "ubels26_haircycle"
 main_folder <- "./"
-
 obj <- readRDS(paste0(main_folder, "post_filter_integrated_objects.RDS"))
+
+gene_list = c("PDGFRA", "FGF7", "VIM", "EDN3", "WNT5A", "KRT1", "KRT10", "KRT6A",
+              "KRT17", "KRT75", "KRT35", "KRT85", "PECAM1", "VWF", "TAGLN", "DSP",
+              "MLANA", "PMEL")
 
 #################################################################
 # SETUP PY ENVIRONMENT
@@ -35,12 +40,28 @@ obj <- readRDS(paste0(main_folder, "post_filter_integrated_objects.RDS"))
 # compatibility will not be supported. CellBender can run 
 # without GPU support but this will take a very long time.
 
-source("./helper_functions.R")
-source("./setup_py_env.R")
-source("./ambient_rna_removal.R")
-source("./doublet_removal.R")
+source("./scripts/helper_functions.R")
+source("./scripts/setup_py_env.R")
+source("./scripts/ambient_rna_removal.R")
+source("./scripts/doublet_removal.R")
 
 py_location <- "/home/uvictor/miniconda3/bin/conda"
 conda_info_env <- setup_py_env(project, py_location)
 
+#################################################################
+# RUNNING BROAD MARKER GENES FOR INITIAL CLUSTERIZATION
+#################################################################
+
+# Easy visualization tool to get a better overview of gene expression particularly
+# for when low cell count has high gene expression in a particular cluster
 #
+# k parameter controls smoothing
+# t parameter controls diffusion
+
+FeaturePlot(obj, features = "MLANA")
+
+plot_magic_genes(obj, 
+                 genes = gene_list,
+                 output_folder = "./marker_genes",
+                 knn = 10,
+                 t = 3)
