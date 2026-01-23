@@ -62,12 +62,12 @@ plot_marker_genes(obj = obj,
                               reduction = "umap", 
                               output_dir = "./marker_genes/broad_markers", 
                               pt_size = 1,
-                              outline_size = 0,
-                              concavity = 1,
+                              outline_size = 0.25,
+                              concavity = 5,
                               show_labels = TRUE,
-                              eps = 1,
-                              min_pts = 1,
-                              outlier_percentile = 0.999)
+                              eps = 2,
+                              min_pts = 25,
+                              outlier_percentile = 0.98)
 
 #################################################################
 #

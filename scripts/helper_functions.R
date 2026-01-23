@@ -296,7 +296,7 @@ plot_marker_genes <- function(obj,
   
   # Custom color scale for density
   inferno_cols <- viridis::inferno(100)
-  custom_cols <- c("grey85", inferno_cols[1:100])
+  custom_cols <- c("grey85", inferno_cols[0:100])
   
   # Get UMAP coordinates and cluster labels
   umap_coords <- as.data.frame(Embeddings(obj, reduction = reduction))
@@ -354,7 +354,7 @@ plot_marker_genes <- function(obj,
     tryCatch({
       
       p <- plot_density(obj, gene, reduction = reduction, size = pt_size) +
-        scale_color_gradientn(colors = custom_cols) +
+        scale_color_gradientn(colors = inferno_cols) +
         ggtitle(gene) +
         theme(
           axis.ticks = element_blank(),
@@ -400,8 +400,8 @@ plot_marker_genes <- function(obj,
       ggsave(
         filename = file.path(output_dir, paste0(gene, "_density.png")),
         plot = p,
-        width = 8,
-        height = 6,
+        width = 5,
+        height = 5,
         dpi = 300
       )
       
