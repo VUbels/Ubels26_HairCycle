@@ -446,9 +446,68 @@ extract_DA_cells <- function(milo_obj, da_results, alpha = 0.05,
   return(unique(cell_barcodes))
 }
 
-# ============================================================================
+##############################################################################
+# Simple percentage overview for clusters per hair cycle phase
+##############################################################################
+
+get_percentage_clusters <- function(seurat_obj, clusters, phases) {
+  data_frame <- data.frame(
+    cluster = seurat_obj@meta.data[[clusters]],
+    orig.ident = seurat_obj@meta.data[[phases]]
+  ) |>
+    count(cluster, orig.ident) |>
+    group_by(cluster) |>
+    mutate(percentage = n / sum(n) * 100) |>
+    ungroup()
+  return(data_frame)
+
+}
+
+visualize_percentage_clusters <- function(seurat_obj, clusters, phases, output_dir) {
+  
+  phase_df <- get_percentage_clusters(seurat_obj = seurat_obj, clusters = clusters, phases = phases)
+  phase_matrix <- xtabs(percentage ~ orig.ident + cluster, data = phase_df)
+  
+  colors <- c("#272E6A", "#D51F26", "#1A7D3F")  # Dark blue, Red, Complementary green
+  
+  png(
+    filename = file.path(output_dir, paste0(clusters, "_percentiles.png")),
+    width = 10,
+    height = 5,
+    units = "in",
+    res = 300
+  )
+  
+  par(mar = c(7, 4, 4, 8), xpd = TRUE)
+  
+  bp <- barplot(phase_matrix, 
+                beside = FALSE,
+                legend = FALSE,
+                las = 2,
+                col = colors,
+                xaxt = "n")
+  
+  text(x = bp, 
+       y = -2,
+       labels = colnames(phase_matrix), 
+       srt = 45, 
+       adj = 1, 
+       xpd = TRUE)
+  
+  legend("topright", 
+         inset = c(-0.15, 0),
+         legend = rownames(phase_matrix),
+         fill = colors,
+         title = "orig.ident",
+         bty = "n")
+  
+  dev.off()
+}
+
+
+##############################################################################
 # ENHANCED SPATIAL OVERLAP WITH EXPRESSION THRESHOLDS
-# ============================================================================
+##############################################################################
 
 plot_spatial_overlap_thresholded <- function(spatial_obj, gene1, gene2,
                                              sigma = 50,

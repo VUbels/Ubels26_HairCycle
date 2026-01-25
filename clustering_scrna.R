@@ -29,7 +29,11 @@ obj <- readRDS(paste0(main_folder, "post_filter_integrated_objects.RDS"))
 
 gene_list = c("PDGFRA", "FGF7", "VIM", "EDN3", "WNT5A", "KRT1", "KRT10", "KRT6A",
               "KRT17", "KRT75", "KRT35", "KRT85", "PECAM1", "VWF", "TAGLN", "DSP",
-              "MLANA", "PMEL")
+              "MLANA", "PMEL", "SOX7","SOX9", "SOX18","SERPINA3", "PDZRN3", "FGL2",
+              "CXCL14", "LGR5", "COMP", "CD34", "AQP3", "KRT79", "KRT19", "WNT3",
+              "WNT10A", "WNT10B", "RGS5", "CD3D", "CD69", "TWIST2", "SOX10", "CDH9",
+              "ACTA2", "EGF", "LGR6", "FGF14", "FMN2", "CTNNA2", "GPR183", "CD53",
+              "CD2", "HLA-DQA2", "S100A2", "NES", "RGS5")
 
 #################################################################
 # SETUP PY ENVIRONMENT
@@ -56,6 +60,8 @@ conda_info_env <- setup_py_env(project, py_location)
 # Easy visualization through Nebulosa to get a better overview of gene expression particularly
 # for when low cell count has high gene expression in a particular cluster
 
+broad_markers <- FindAllMarkers(obj, min.pct = 0.1, logfc.threshold = 0.3)
+
 plot_marker_genes(obj = obj, 
                               genes = gene_list, 
                               cluster_col = "seurat_clusters",
@@ -70,5 +76,28 @@ plot_marker_genes(obj = obj,
                               outlier_percentile = 0.98)
 
 #################################################################
-#
+# ASSIGN BROAD MARKER IDENTIFICATION TO CLUSTERS
 #################################################################
+
+broad_cluster_identification <- list(
+ `0` = "Temporal.Follicle", #PDZRN3/SERPINA3/SOX9/KRT75
+ `1` = "Temporal.Follicle", #PDZRN3/SOX9
+ `2` = "Central.Follicle", #WNT5A/KRT19
+ `3` = "Central.Follicle", #WNT5A/
+ `4` = "Matrix", #KRT35/KRT85/WNT10B
+ `5` = "Permanent.Follicle", #KRT1/KRT10/KRT79/AQP3
+ `6` = "Permanent.Follicle", #LGR6/SOX7/WNT10A
+ `7` = "Permanent.Follicle", #KRT1/KRT10/KRT79/WNT3
+ `8` = "Endothelial", #PLVAP/PECAM1/VWF/SOX18/VIM
+ `9` = "Pericytes", #RGS5 but also EDN3/VIM/CD34
+ `10` = "Immune", #CD3D/CD53/CD69
+ `11` = "Dermal.Papilla", #FGF7/TWIST2/PDGFRA
+ `12` = "Melanocytes", #PMEL/MLANA/SOX10
+ `13` = "Dermal.Sheath", #TALGN/VIM/ACTA2
+ `14` = "Central.Follicle", #EGF/FGF14
+ `15` = "Temporal.Follicle", #Likely differentiating cells? #KR17/
+ `16` = "Neural.Progenitors" #CTNNA2/CDH9
+)
+obj$broad_cluster <- unname(unlist(broad_cluster_identification[as.character(obj$seurat_clusters)]))
+
+visualize_percentage_clusters(seurat_obj = obj, clusters = "broad_cluster", phases = "orig.ident", output_dir = paste0(main_folder, "marker_genes"))
