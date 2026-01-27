@@ -1021,3 +1021,115 @@ plot_magic_genes <- function(seurat_obj,
   
   cat(sprintf("Plots saved to: %s\n", output_folder))
 }
+
+
+#############################################################################
+# SPATIAL DATA SELECTOR
+#############################################################################
+
+library(shiny)
+library(plotly)
+library(Seurat)
+
+spatial_lasso_selector <- function(obj, feature, image_name = NULL) {
+  
+  if (is.null(image_name)) {
+    image_name <- Images(obj)[1]
+  }
+  
+  coords <- GetTissueCoordinates(obj, image = image_name)
+  expr <- FetchData(obj, vars = feature)[, 1]
+  
+  df <- data.frame(
+    x = coords[[1]],
+    y = coords[[2]],
+    expr = expr,
+    barcode = rownames(coords),
+    stringsAsFactors = FALSE
+  )
+  
+  selected_barcodes <- NULL
+  
+  ui <- fluidPage(
+    titlePanel(paste("Select ROI -", feature)),
+    fluidRow(
+      column(9, plotlyOutput("spatial_plot", height = "600px")),
+      column(3,
+             h4("Selected spots:"),
+             verbatimTextOutput("n_selected"),
+             actionButton("done", "Confirm Selection", class = "btn-success"),
+             hr(),
+             helpText("Use lasso or box select tool in plot")
+      )
+    )
+  )
+  
+  server <- function(input, output, session) {
+    output$spatial_plot <- renderPlotly({
+      plot_ly(
+        df,
+        x = ~x,
+        y = ~y,
+        color = ~expr,
+        text = ~barcode,
+        customdata = ~barcode,
+        type = "scatter",
+        mode = "markers",
+        marker = list(size = 5),
+        colors = viridis::viridis(100),
+        source = "spatial"
+      ) %>%
+        layout(
+          dragmode = "lasso",
+          yaxis = list(scaleanchor = "x", scaleratio = 1, autorange = "reversed")
+        )
+    })
+    
+    output$n_selected <- renderPrint({
+      d <- event_data("plotly_selected", source = "spatial")
+      if (is.null(d)) {
+        cat("0 spots selected")
+      } else {
+        cat(nrow(d), "spots selected")
+      }
+    })
+    
+    observeEvent(input$done, {
+      d <- event_data("plotly_selected", source = "spatial")
+      if (!is.null(d)) {
+        selected_barcodes <<- d$customdata
+      }
+      stopApp(selected_barcodes)
+    })
+  }
+  
+  result <- runApp(shinyApp(ui, server))
+  return(result)
+}
+
+add_lineage_label <- function(obj, 
+                              selected_cells, 
+                              feature, 
+                              threshold, 
+                              label_name = NULL) {
+  
+  if (is.null(label_name)) {
+    label_name <- paste0(feature, "_Lineage")
+  }
+  
+  expr <- FetchData(obj, vars = feature)[, 1]
+  names(expr) <- colnames(obj)
+  
+  in_region <- colnames(obj) %in% selected_cells
+  above_threshold <- expr >= threshold
+  
+  obj@meta.data[[label_name]] <- in_region & above_threshold
+  
+  message(paste0(
+    "Added '", label_name, "': ",
+    sum(obj@meta.data[[label_name]]), " TRUE / ",
+    sum(!obj@meta.data[[label_name]]), " FALSE"
+  ))
+  
+  return(obj)
+}
